@@ -1,6 +1,5 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.expressions.Window
 
 object SparkBankAccountUDF {
 
@@ -32,7 +31,23 @@ object SparkBankAccountUDF {
     accounts.show(false)
 
     // --------------------------------------------------
-    // 2. TRANSACTION DATA
+    // 2. BROADCAST ACCOUNT DATA
+    // --------------------------------------------------
+
+    val accountMap = accounts.collect()
+      .map(account => account.accountId -> account)
+      .toMap
+
+    val broadcastAccounts =
+      spark.sparkContext.broadcast(accountMap)
+
+    println("\n===== BROADCAST VARIABLE =====")
+    println(
+      s"Broadcasted Accounts: ${broadcastAccounts.value.size}"
+    )
+
+    // --------------------------------------------------
+    // 3. TRANSACTION DATA
     // One account can perform N transactions
     // --------------------------------------------------
 
@@ -69,7 +84,7 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 3. CONVERT TO DATAFRAMES
+    // 4. CONVERT TO DATAFRAMES
     // --------------------------------------------------
 
     val accountDF = accounts.toDF()
@@ -84,7 +99,7 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 4. JOIN ACCOUNT AND TRANSACTION DATA
+    // 5. JOIN ACCOUNT AND TRANSACTION DATA
     // --------------------------------------------------
 
     val joinedDF = accountDF
@@ -100,7 +115,29 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 5. USER DEFINED FUNCTION
+    // 6. ACCUMULATORS
+    // --------------------------------------------------
+
+    val totalTransactions =
+      spark.sparkContext.longAccumulator("Total Transactions")
+
+    val successfulTransactions =
+      spark.sparkContext.longAccumulator("Successful Transactions")
+
+    val failedTransactions =
+      spark.sparkContext.longAccumulator("Failed Transactions")
+
+    val insufficientBalance =
+      spark.sparkContext.longAccumulator("Insufficient Balance")
+
+    val successfulDeposits =
+      spark.sparkContext.longAccumulator("Successful Deposits")
+
+    val successfulWithdrawals =
+      spark.sparkContext.longAccumulator("Successful Withdrawals")
+
+    // --------------------------------------------------
+    // 7. USER DEFINED FUNCTION
     // --------------------------------------------------
 
     val processTransaction = udf(
@@ -114,14 +151,18 @@ object SparkBankAccountUDF {
 
           (currentBalance, "Invalid Amount")
 
-        } else if (transactionType.toLowerCase == "deposit") {
+        } else if (
+          transactionType.toLowerCase == "deposit"
+        ) {
 
           (
             currentBalance + amount,
             "Deposit Successful"
           )
 
-        } else if (transactionType.toLowerCase == "withdraw") {
+        } else if (
+          transactionType.toLowerCase == "withdraw"
+        ) {
 
           if (amount > currentBalance) {
 
@@ -149,7 +190,8 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 6. SEQUENTIAL TRANSACTION PROCESSING
+    // 8. SEQUENTIAL TRANSACTION PROCESSING
+    // USING BROADCAST ACCOUNT DATA
     // --------------------------------------------------
 
     val transactionRows = joinedDF
@@ -161,33 +203,67 @@ object SparkBankAccountUDF {
 
     val processedRows = transactionRows.map { row =>
 
-      val accountId = row.getAs[Int]("accountId")
-      val name = row.getAs[String]("name")
-      val initialBalance = row.getAs[Double]("initialBalance")
-      val transactionType = row.getAs[String]("transactionType")
-      val amount = row.getAs[Double]("amount")
-      val transactionNo = row.getAs[Int]("transactionNo")
+      val accountId =
+        row.getAs[Int]("accountId")
 
+      val name =
+        row.getAs[String]("name")
+
+      val transactionType =
+        row.getAs[String]("transactionType")
+
+      val amount =
+        row.getAs[Double]("amount")
+
+      val transactionNo =
+        row.getAs[Int]("transactionNo")
+
+      // Get account information from Broadcast Variable
+      val account =
+        broadcastAccounts.value(accountId)
+
+      // Start a new account with its initial balance
       if (accountId != currentAccountId) {
+
         currentAccountId = accountId
-        currentBalance = initialBalance
+
+        currentBalance =
+          account.initialBalance
       }
+
+      // Count every transaction
+      totalTransactions.add(1)
 
       val result =
         if (amount < 0) {
 
-          (currentBalance, "Invalid Amount")
+          failedTransactions.add(1)
 
-        } else if (transactionType.toLowerCase == "deposit") {
+          (
+            currentBalance,
+            "Invalid Amount"
+          )
+
+        } else if (
+          transactionType.toLowerCase == "deposit"
+        ) {
+
+          successfulTransactions.add(1)
+          successfulDeposits.add(1)
 
           (
             currentBalance + amount,
             "Deposit Successful"
           )
 
-        } else if (transactionType.toLowerCase == "withdraw") {
+        } else if (
+          transactionType.toLowerCase == "withdraw"
+        ) {
 
           if (amount > currentBalance) {
+
+            failedTransactions.add(1)
+            insufficientBalance.add(1)
 
             (
               currentBalance,
@@ -195,6 +271,9 @@ object SparkBankAccountUDF {
             )
 
           } else {
+
+            successfulTransactions.add(1)
+            successfulWithdrawals.add(1)
 
             (
               currentBalance - amount,
@@ -204,18 +283,21 @@ object SparkBankAccountUDF {
 
         } else {
 
+          failedTransactions.add(1)
+
           (
             currentBalance,
             "Invalid Transaction"
           )
         }
 
+      // Update running balance
       currentBalance = result._1
 
       (
         accountId,
         name,
-        initialBalance,
+        account.initialBalance,
         transactionNo,
         transactionType,
         amount,
@@ -241,7 +323,7 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 7. REGISTER UDF FOR SPARK SQL
+    // 9. REGISTER UDF FOR SPARK SQL
     // --------------------------------------------------
 
     spark.udf.register(
@@ -256,11 +338,15 @@ object SparkBankAccountUDF {
 
           "Invalid Amount"
 
-        } else if (transactionType.toLowerCase == "deposit") {
+        } else if (
+          transactionType.toLowerCase == "deposit"
+        ) {
 
           "Deposit Successful"
 
-        } else if (transactionType.toLowerCase == "withdraw") {
+        } else if (
+          transactionType.toLowerCase == "withdraw"
+        ) {
 
           if (amount > balanceBefore) {
             "Insufficient Balance"
@@ -276,13 +362,15 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 8. SQL TEMPORARY VIEW
+    // 10. CREATE TEMPORARY VIEW
     // --------------------------------------------------
 
-    joinedDF.createOrReplaceTempView("bank_transactions")
+    joinedDF.createOrReplaceTempView(
+      "bank_transactions"
+    )
 
     // --------------------------------------------------
-    // 9. SPARK SQL + WINDOW FUNCTION + UDF
+    // 11. SPARK SQL + RUNNING BALANCE
     // --------------------------------------------------
 
     val sqlResult = spark.sql(
@@ -316,22 +404,22 @@ object SparkBankAccountUDF {
 
     val sqlWithStatus = sqlResult
       .withColumn(
+        "balanceBefore",
+        coalesce(
+          col("balanceBefore"),
+          col("initialBalance")
+        )
+      )
+      .withColumn(
         "status",
         expr(
           """
           transactionStatus(
             transactionType,
             amount,
-            COALESCE(balanceBefore, initialBalance)
+            balanceBefore
           )
           """
-        )
-      )
-      .withColumn(
-        "balanceBefore",
-        coalesce(
-          col("balanceBefore"),
-          col("initialBalance")
         )
       )
 
@@ -339,7 +427,7 @@ object SparkBankAccountUDF {
     sqlWithStatus.show(false)
 
     // --------------------------------------------------
-    // 10. FINAL RESULT
+    // 12. FINAL RESULT
     // --------------------------------------------------
 
     val finalResult = resultDF.select(
@@ -360,53 +448,37 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 11. TRANSACTION SUMMARY
+    // 13. ACCUMULATOR SUMMARY
     // --------------------------------------------------
 
-    val totalTransactions = finalResult.count()
+    println("\n===== ACCUMULATOR SUMMARY =====")
 
-    val successfulTransactions = finalResult
-      .filter(
-        col("status") === "Deposit Successful" ||
-        col("status") === "Withdrawal Successful"
-      )
-      .count()
+    println(
+      s"Total Transactions      : ${totalTransactions.value}"
+    )
 
-    val failedTransactions = finalResult
-      .filter(
-        col("status") =!= "Deposit Successful" &&
-        col("status") =!= "Withdrawal Successful"
-      )
-      .count()
+    println(
+      s"Successful Transactions : ${successfulTransactions.value}"
+    )
 
-    val insufficientBalance = finalResult
-      .filter(
-        col("status") === "Insufficient Balance"
-      )
-      .count()
+    println(
+      s"Failed Transactions     : ${failedTransactions.value}"
+    )
 
-    val successfulDeposits = finalResult
-      .filter(
-        col("status") === "Deposit Successful"
-      )
-      .count()
+    println(
+      s"Insufficient Balance    : ${insufficientBalance.value}"
+    )
 
-    val successfulWithdrawals = finalResult
-      .filter(
-        col("status") === "Withdrawal Successful"
-      )
-      .count()
+    println(
+      s"Successful Deposits     : ${successfulDeposits.value}"
+    )
 
-    println("\n===== TRANSACTION SUMMARY =====")
-    println(s"Total Transactions      : $totalTransactions")
-    println(s"Successful Transactions : $successfulTransactions")
-    println(s"Failed Transactions     : $failedTransactions")
-    println(s"Insufficient Balance    : $insufficientBalance")
-    println(s"Successful Deposits     : $successfulDeposits")
-    println(s"Successful Withdrawals  : $successfulWithdrawals")
+    println(
+      s"Successful Withdrawals  : ${successfulWithdrawals.value}"
+    )
 
     // --------------------------------------------------
-    // 12. SAVE FINAL OUTPUT
+    // 14. SAVE FINAL OUTPUT
     // --------------------------------------------------
 
     finalResult
@@ -414,9 +486,19 @@ object SparkBankAccountUDF {
       .write
       .mode("overwrite")
       .option("header", "true")
-      .csv("output/final-bank-account-result")
+      .csv(
+        "output/final-bank-account-result"
+      )
 
-    println("\n===== SPARK BANK ACCOUNT UDF COMPLETED =====")
+    println(
+      "\n===== SPARK BANK ACCOUNT UDF COMPLETED ====="
+    )
+
+    // --------------------------------------------------
+    // 15. CLEAN UP BROADCAST VARIABLE
+    // --------------------------------------------------
+
+    broadcastAccounts.destroy()
 
     spark.stop()
   }
