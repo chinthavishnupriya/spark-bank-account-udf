@@ -1,5 +1,6 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
 
 object SparkBankAccountUDF {
 
@@ -32,13 +33,34 @@ object SparkBankAccountUDF {
 
     // --------------------------------------------------
     // 2. TRANSACTION DATA
+    // One account can perform N transactions
     // --------------------------------------------------
 
     val transactions = Seq(
+
+      // Chintan - 5 transactions
       Transaction(1001, "Chintan", "deposit", 2000.0, 1),
-      Transaction(1002, "Rahul", "withdraw", 5000.0, 1),
+      Transaction(1001, "Chintan", "withdraw", 1000.0, 2),
+      Transaction(1001, "Chintan", "deposit", 500.0, 3),
+      Transaction(1001, "Chintan", "withdraw", 800.0, 4),
+      Transaction(1001, "Chintan", "withdraw", 10000.0, 5),
+
+      // Rahul - 3 transactions
+      Transaction(1002, "Rahul", "deposit", 1000.0, 1),
+      Transaction(1002, "Rahul", "withdraw", 2000.0, 2),
+      Transaction(1002, "Rahul", "withdraw", 5000.0, 3),
+
+      // Priya - 4 transactions
       Transaction(1003, "Priya", "deposit", 3000.0, 1),
-      Transaction(1004, "Amit", "withdraw", 500.0, 1)
+      Transaction(1003, "Priya", "withdraw", 2000.0, 2),
+      Transaction(1003, "Priya", "deposit", 1000.0, 3),
+      Transaction(1003, "Priya", "withdraw", 5000.0, 4),
+
+      // Amit - 3 transactions
+      Transaction(1004, "Amit", "withdraw", 500.0, 1),
+      Transaction(1004, "Amit", "deposit", 1000.0, 2),
+      Transaction(1004, "Amit", "withdraw", 1000.0, 3)
+
     ).toDS()
 
     println("\n===== TRANSACTION DATA =====")
@@ -47,7 +69,7 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 3. DATAFRAMES
+    // 3. CONVERT TO DATAFRAMES
     // --------------------------------------------------
 
     val accountDF = accounts.toDF()
@@ -127,45 +149,31 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 6. APPLY UDF
+    // 6. SEQUENTIAL TRANSACTION PROCESSING
     // --------------------------------------------------
 
-    val resultDF = joinedDF
-      .withColumn(
-        "transactionResult",
-        processTransaction(
-          col("initialBalance"),
-          col("transactionType"),
-          col("amount")
-        )
-      )
-      .withColumn(
-        "finalBalance",
-        col("transactionResult._1")
-      )
-      .withColumn(
-        "status",
-        col("transactionResult._2")
-      )
-      .drop("transactionResult")
-
-    println("\n===== UDF RESULT =====")
-    resultDF
+    val transactionRows = joinedDF
       .orderBy("accountId", "transactionNo")
-      .show(false)
+      .collect()
 
-    // --------------------------------------------------
-    // 7. REGISTER UDF FOR SPARK SQL
-    // --------------------------------------------------
+    var currentAccountId = -1
+    var currentBalance = 0.0
 
-    spark.udf.register(
-      "processBankTransaction",
-      (
-        currentBalance: Double,
-        transactionType: String,
-        amount: Double
-      ) => {
+    val processedRows = transactionRows.map { row =>
 
+      val accountId = row.getAs[Int]("accountId")
+      val name = row.getAs[String]("name")
+      val initialBalance = row.getAs[Double]("initialBalance")
+      val transactionType = row.getAs[String]("transactionType")
+      val amount = row.getAs[Double]("amount")
+      val transactionNo = row.getAs[Int]("transactionNo")
+
+      if (accountId != currentAccountId) {
+        currentAccountId = accountId
+        currentBalance = initialBalance
+      }
+
+      val result =
         if (amount < 0) {
 
           (currentBalance, "Invalid Amount")
@@ -201,17 +209,80 @@ object SparkBankAccountUDF {
             "Invalid Transaction"
           )
         }
+
+      currentBalance = result._1
+
+      (
+        accountId,
+        name,
+        initialBalance,
+        transactionNo,
+        transactionType,
+        amount,
+        result._1,
+        result._2
+      )
+    }
+
+    val resultDF = processedRows.toSeq.toDF(
+      "accountId",
+      "name",
+      "initialBalance",
+      "transactionNo",
+      "transactionType",
+      "amount",
+      "finalBalance",
+      "status"
+    )
+
+    println("\n===== UDF RESULT =====")
+    resultDF
+      .orderBy("accountId", "transactionNo")
+      .show(false)
+
+    // --------------------------------------------------
+    // 7. REGISTER UDF FOR SPARK SQL
+    // --------------------------------------------------
+
+    spark.udf.register(
+      "transactionStatus",
+      (
+        transactionType: String,
+        amount: Double,
+        balanceBefore: Double
+      ) => {
+
+        if (amount < 0) {
+
+          "Invalid Amount"
+
+        } else if (transactionType.toLowerCase == "deposit") {
+
+          "Deposit Successful"
+
+        } else if (transactionType.toLowerCase == "withdraw") {
+
+          if (amount > balanceBefore) {
+            "Insufficient Balance"
+          } else {
+            "Withdrawal Successful"
+          }
+
+        } else {
+
+          "Invalid Transaction"
+        }
       }
     )
 
     // --------------------------------------------------
-    // 8. TEMPORARY VIEW
+    // 8. SQL TEMPORARY VIEW
     // --------------------------------------------------
 
     joinedDF.createOrReplaceTempView("bank_transactions")
 
     // --------------------------------------------------
-    // 9. SPARK SQL + UDF
+    // 9. SPARK SQL + WINDOW FUNCTION + UDF
     // --------------------------------------------------
 
     val sqlResult = spark.sql(
@@ -223,18 +294,49 @@ object SparkBankAccountUDF {
           transactionNo,
           transactionType,
           amount,
-          processBankTransaction(
-            initialBalance,
-            transactionType,
-            amount
-          ) AS transactionResult
+
+          initialBalance
+          +
+          SUM(
+            CASE
+              WHEN transactionType = 'deposit'
+                THEN amount
+              ELSE -amount
+            END
+          ) OVER (
+            PARTITION BY accountId
+            ORDER BY transactionNo
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+          ) AS balanceBefore
+
         FROM bank_transactions
         ORDER BY accountId, transactionNo
       """
     )
 
-    println("\n===== SQL + UDF =====")
-    sqlResult.show(false)
+    val sqlWithStatus = sqlResult
+      .withColumn(
+        "status",
+        expr(
+          """
+          transactionStatus(
+            transactionType,
+            amount,
+            COALESCE(balanceBefore, initialBalance)
+          )
+          """
+        )
+      )
+      .withColumn(
+        "balanceBefore",
+        coalesce(
+          col("balanceBefore"),
+          col("initialBalance")
+        )
+      )
+
+    println("\n===== SQL RUNNING BALANCE + UDF =====")
+    sqlWithStatus.show(false)
 
     // --------------------------------------------------
     // 10. FINAL RESULT
