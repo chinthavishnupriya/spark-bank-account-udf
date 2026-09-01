@@ -32,17 +32,27 @@ object SparkBankAccountUDF {
 
     // --------------------------------------------------
     // 2. TRANSACTION DATA
+    // Multiple transactions for the same account
     // --------------------------------------------------
 
     val transactions = Seq(
-      Transaction(1001, "Chintan", "deposit", 2000.0),
-      Transaction(1002, "Rahul", "withdraw", 5000.0),
-      Transaction(1003, "Priya", "deposit", 3000.0),
-      Transaction(1004, "Amit", "withdraw", 500.0)
+      Transaction(1001, "Chintan", "deposit", 2000.0, 1),
+      Transaction(1001, "Chintan", "withdraw", 1000.0, 2),
+      Transaction(1001, "Chintan", "deposit", 500.0, 3),
+      Transaction(1001, "Chintan", "withdraw", 8000.0, 4),
+
+      Transaction(1002, "Rahul", "withdraw", 5000.0, 1),
+      Transaction(1002, "Rahul", "deposit", 1000.0, 2),
+
+      Transaction(1003, "Priya", "deposit", 3000.0, 1),
+      Transaction(1003, "Priya", "withdraw", 2000.0, 2),
+
+      Transaction(1004, "Amit", "withdraw", 500.0, 1),
+      Transaction(1004, "Amit", "deposit", 1000.0, 2)
     ).toDS()
 
     println("\n===== TRANSACTION DATA =====")
-    transactions.show(false)
+    transactions.orderBy("accountId", "transactionNo").show(false)
 
     // --------------------------------------------------
     // 3. CONVERT TO DATAFRAMES
@@ -55,7 +65,9 @@ object SparkBankAccountUDF {
     accountDF.show(false)
 
     println("\n===== TRANSACTION DATAFRAME =====")
-    transactionDF.show(false)
+    transactionDF
+      .orderBy("accountId", "transactionNo")
+      .show(false)
 
     // --------------------------------------------------
     // 4. JOIN ACCOUNT AND TRANSACTION DATA
@@ -69,41 +81,45 @@ object SparkBankAccountUDF {
       )
 
     println("\n===== JOINED DATA =====")
-    joinedDF.show(false)
+    joinedDF
+      .orderBy("accountId", "transactionNo")
+      .show(false)
 
     // --------------------------------------------------
     // 5. USER DEFINED FUNCTION
     // --------------------------------------------------
 
     val processTransaction = udf(
-      (initialBalance: Double,
-       transactionType: String,
-       amount: Double) => {
+      (
+        currentBalance: Double,
+        transactionType: String,
+        amount: Double
+      ) => {
 
         if (amount < 0) {
 
-          (initialBalance, "Invalid Amount")
+          (currentBalance, "Invalid Amount")
 
         } else if (transactionType.toLowerCase == "deposit") {
 
           (
-            initialBalance + amount,
+            currentBalance + amount,
             "Deposit Successful"
           )
 
         } else if (transactionType.toLowerCase == "withdraw") {
 
-          if (amount > initialBalance) {
+          if (amount > currentBalance) {
 
             (
-              initialBalance,
+              currentBalance,
               "Insufficient Balance"
             )
 
           } else {
 
             (
-              initialBalance - amount,
+              currentBalance - amount,
               "Withdrawal Successful"
             )
           }
@@ -111,7 +127,7 @@ object SparkBankAccountUDF {
         } else {
 
           (
-            initialBalance,
+            currentBalance,
             "Invalid Transaction"
           )
         }
@@ -119,30 +135,96 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 6. APPLY UDF
+    // 6. PROCESS MULTIPLE TRANSACTIONS
     // --------------------------------------------------
 
-    val resultDF = joinedDF
-      .withColumn(
-        "transactionResult",
-        processTransaction(
-          col("initialBalance"),
-          col("transactionType"),
-          col("amount")
-        )
+    val transactionRows = joinedDF
+      .orderBy("accountId", "transactionNo")
+      .collect()
+
+    var currentAccountId = -1
+    var currentBalance = 0.0
+
+    val processedRows = transactionRows.map { row =>
+
+      val accountId = row.getAs[Int]("accountId")
+      val name = row.getAs[String]("name")
+      val initialBalance = row.getAs[Double]("initialBalance")
+      val transactionType = row.getAs[String]("transactionType")
+      val amount = row.getAs[Double]("amount")
+      val transactionNo = row.getAs[Int]("transactionNo")
+
+      if (accountId != currentAccountId) {
+        currentAccountId = accountId
+        currentBalance = initialBalance
+      }
+
+      val result =
+        if (amount < 0) {
+
+          (currentBalance, "Invalid Amount")
+
+        } else if (transactionType.toLowerCase == "deposit") {
+
+          (
+            currentBalance + amount,
+            "Deposit Successful"
+          )
+
+        } else if (transactionType.toLowerCase == "withdraw") {
+
+          if (amount > currentBalance) {
+
+            (
+              currentBalance,
+              "Insufficient Balance"
+            )
+
+          } else {
+
+            (
+              currentBalance - amount,
+              "Withdrawal Successful"
+            )
+          }
+
+        } else {
+
+          (
+            currentBalance,
+            "Invalid Transaction"
+          )
+        }
+
+      currentBalance = result._1
+
+      (
+        accountId,
+        name,
+        initialBalance,
+        transactionNo,
+        transactionType,
+        amount,
+        result._1,
+        result._2
       )
-      .withColumn(
-        "finalBalance",
-        col("transactionResult._1")
-      )
-      .withColumn(
-        "status",
-        col("transactionResult._2")
-      )
-      .drop("transactionResult")
+    }
+
+    val resultDF = processedRows.toSeq.toDF(
+      "accountId",
+      "name",
+      "initialBalance",
+      "transactionNo",
+      "transactionType",
+      "amount",
+      "finalBalance",
+      "status"
+    )
 
     println("\n===== UDF RESULT =====")
-    resultDF.show(false)
+    resultDF
+      .orderBy("accountId", "transactionNo")
+      .show(false)
 
     // --------------------------------------------------
     // 7. REGISTER UDF FOR SPARK SQL
@@ -151,35 +233,35 @@ object SparkBankAccountUDF {
     spark.udf.register(
       "processBankTransaction",
       (
-        initialBalance: Double,
+        currentBalance: Double,
         transactionType: String,
         amount: Double
       ) => {
 
         if (amount < 0) {
 
-          (initialBalance, "Invalid Amount")
+          (currentBalance, "Invalid Amount")
 
         } else if (transactionType.toLowerCase == "deposit") {
 
           (
-            initialBalance + amount,
+            currentBalance + amount,
             "Deposit Successful"
           )
 
         } else if (transactionType.toLowerCase == "withdraw") {
 
-          if (amount > initialBalance) {
+          if (amount > currentBalance) {
 
             (
-              initialBalance,
+              currentBalance,
               "Insufficient Balance"
             )
 
           } else {
 
             (
-              initialBalance - amount,
+              currentBalance - amount,
               "Withdrawal Successful"
             )
           }
@@ -187,7 +269,7 @@ object SparkBankAccountUDF {
         } else {
 
           (
-            initialBalance,
+            currentBalance,
             "Invalid Transaction"
           )
         }
@@ -210,6 +292,7 @@ object SparkBankAccountUDF {
           accountId,
           name,
           initialBalance,
+          transactionNo,
           transactionType,
           amount,
           processBankTransaction(
@@ -218,6 +301,7 @@ object SparkBankAccountUDF {
             amount
           ) AS transactionResult
         FROM bank_transactions
+        ORDER BY accountId, transactionNo
       """
     )
 
@@ -232,6 +316,7 @@ object SparkBankAccountUDF {
       col("accountId"),
       col("name"),
       col("initialBalance"),
+      col("transactionNo"),
       col("transactionType"),
       col("amount"),
       col("finalBalance"),
@@ -239,10 +324,13 @@ object SparkBankAccountUDF {
     )
 
     println("\n===== FINAL RESULT =====")
-    finalResult.show(false)
+
+    finalResult
+      .orderBy("accountId", "transactionNo")
+      .show(false)
 
     // --------------------------------------------------
-    // 11. SAVE OUTPUT
+    // 11. SAVE FINAL OUTPUT
     // --------------------------------------------------
 
     finalResult
