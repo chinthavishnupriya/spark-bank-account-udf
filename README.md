@@ -1,22 +1,17 @@
 # Spark Bank Account UDF
 
-## Project Overview
+A Scala and Apache Spark project that demonstrates how **User Defined Functions (UDFs)** can be used to process bank account transactions.
 
-This project demonstrates a simple **Bank Account Transaction Processing System** using **Apache Spark, Scala, DataFrames, Spark SQL, and User Defined Functions (UDFs)**.
-
-The project stores basic account information separately from transaction information. Transactions are processed using a UDF to calculate the final balance and transaction status.
+The project supports **multiple transactions for the same account**. Each transaction is processed sequentially, and the balance from one transaction becomes the balance for the next transaction.
 
 ## Technologies Used
 
 * Scala 2.12.18
 * Apache Spark 3.5.6
 * Spark SQL
-* Spark DataFrames
-* Spark Datasets
-* User Defined Functions (UDF)
-* SBT
+* sbt
+* Java 17
 * Git and GitHub
-* WSL2 / Linux
 
 ## Project Structure
 
@@ -24,8 +19,8 @@ The project stores basic account information separately from transaction informa
 spark-bank-account-udf/
 │
 ├── build.sbt
-├── .gitignore
 ├── README.md
+├── .gitignore
 │
 ├── project/
 │   └── build.properties
@@ -45,73 +40,88 @@ spark-bank-account-udf/
 
 ## Account Data
 
-The account table contains:
+The account data contains:
 
 * Account ID
-* Account Name
-* Initial Balance
+* Account holder name
+* Initial balance
 
 Example:
 
-| Account ID | Name    | Initial Balance |
-| ---------: | ------- | --------------: |
-|       1001 | Chintan |          5000.0 |
-|       1002 | Rahul   |          3000.0 |
-|       1003 | Priya   |         10000.0 |
-|       1004 | Amit    |          2000.0 |
+```text
+Account ID    Name       Initial Balance
+1001          Chintan    5000.0
+1002          Rahul      3000.0
+1003          Priya      10000.0
+1004          Amit       2000.0
+```
 
 ## Transaction Data
 
-Transactions are stored separately and contain:
+A separate transaction dataset is used.
+
+Each transaction contains:
 
 * Account ID
 * Name
-* Transaction Type
+* Transaction type
 * Amount
-* Transaction Number
+* Transaction number
 
-Example transactions include:
+One account can perform **N transactions**.
 
-* Deposit
-* Withdrawal
-* Withdrawal greater than available balance
-
-## Processing Flow
+For example, Chintan has five transactions:
 
 ```text
-Account Data
-     ↓
-Transaction Data
-     ↓
-Convert to Dataset
-     ↓
-Convert to DataFrame
-     ↓
-Join Account + Transaction
-     ↓
-Apply User Defined Function
-     ↓
-Validate Transaction
-     ↓
-Calculate Final Balance
-     ↓
-Spark SQL + UDF
-     ↓
-Final Result
-     ↓
-Transaction Summary
-     ↓
-Save CSV Output
+Transaction 1 → Deposit  2000
+Transaction 2 → Withdraw 1000
+Transaction 3 → Deposit   500
+Transaction 4 → Withdraw  800
+Transaction 5 → Withdraw 10000
 ```
+
+## Sequential Balance Processing
+
+Transactions are processed in transaction-number order.
+
+For Chintan:
+
+```text
+Initial Balance = 5000
+
+Transaction 1:
+5000 + 2000 = 7000
+
+Transaction 2:
+7000 - 1000 = 6000
+
+Transaction 3:
+6000 + 500 = 6500
+
+Transaction 4:
+6500 - 800 = 5700
+
+Transaction 5:
+Withdraw 10000
+
+10000 > 5700
+Result = Insufficient Balance
+
+Final Balance = 5700
+```
+
+The balance is therefore carried forward from one transaction to the next.
 
 ## UDF Logic
 
-The UDF processes each transaction according to its type.
+The project uses a User Defined Function to process transactions.
 
 ### Deposit
 
+If the transaction is a deposit:
+
 ```text
-Final Balance = Current Balance + Deposit Amount
+new balance = current balance + amount
 ```
 
 Status:
@@ -122,10 +132,10 @@ Deposit Successful
 
 ### Withdrawal
 
-If the withdrawal amount is less than or equal to the available balance:
+If the transaction is a withdrawal and sufficient balance exists:
 
 ```text
-Final Balance = Current Balance - Withdrawal Amount
+new balance = current balance - amount
 ```
 
 Status:
@@ -134,10 +144,12 @@ Status:
 Withdrawal Successful
 ```
 
-If the withdrawal amount is greater than the available balance:
+### Insufficient Balance
+
+If the withdrawal amount is greater than the current balance:
 
 ```text
-Final Balance = Current Balance
+final balance = current balance
 ```
 
 Status:
@@ -146,7 +158,7 @@ Status:
 Insufficient Balance
 ```
 
-The program prevents the account balance from becoming negative.
+The balance is never allowed to become negative.
 
 ### Invalid Amount
 
@@ -160,7 +172,7 @@ Invalid Amount
 
 ### Invalid Transaction
 
-Unknown transaction types are rejected.
+Transactions other than `deposit` or `withdraw` are rejected.
 
 Status:
 
@@ -168,108 +180,121 @@ Status:
 Invalid Transaction
 ```
 
-## Current Test Transactions
+## Spark SQL
 
-| Account | Transaction | Amount | Result                |
-| ------- | ----------- | -----: | --------------------- |
-| Chintan | Deposit     | 2000.0 | Deposit Successful    |
-| Rahul   | Withdraw    | 5000.0 | Insufficient Balance  |
-| Priya   | Deposit     | 3000.0 | Deposit Successful    |
-| Amit    | Withdraw    |  500.0 | Withdrawal Successful |
+The project also demonstrates Spark SQL integration.
 
-## Final Results
+A temporary view is created from the joined account and transaction data.
 
-| Account | Initial Balance | Type     | Amount | Final Balance | Status                |
-| ------- | --------------: | -------- | -----: | ------------: | --------------------- |
-| Chintan |          5000.0 | Deposit  | 2000.0 |        7000.0 | Deposit Successful    |
-| Rahul   |          3000.0 | Withdraw | 5000.0 |        3000.0 | Insufficient Balance  |
-| Priya   |         10000.0 | Deposit  | 3000.0 |       13000.0 | Deposit Successful    |
-| Amit    |          2000.0 | Withdraw |  500.0 |        1500.0 | Withdrawal Successful |
+Spark SQL and a registered UDF are used to demonstrate transaction-status processing and running balance information.
 
 ## Transaction Summary
 
-The project also calculates transaction statistics using Spark DataFrame operations.
+The current test dataset contains **15 transactions**.
 
 ```text
-Total Transactions      : 4
-Successful Transactions : 3
-Failed Transactions     : 1
-Insufficient Balance    : 1
-Successful Deposits     : 2
-Successful Withdrawals  : 1
+Total Transactions      : 15
+Successful Transactions : 13
+Failed Transactions     : 2
+Insufficient Balance    : 2
+Successful Deposits     : 6
+Successful Withdrawals  : 7
 ```
 
-## Spark SQL
-
-The UDF is also registered with Spark SQL:
+### Transactions Per Account
 
 ```text
-processBankTransaction
+Chintan → 5 transactions
+Rahul   → 3 transactions
+Priya   → 4 transactions
+Amit    → 3 transactions
+
+Total    → 15 transactions
 ```
 
-A temporary view is created:
+## Final Result
+
+The final output contains:
 
 ```text
-bank_transactions
+accountId
+name
+initialBalance
+transactionNo
+transactionType
+amount
+finalBalance
+status
 ```
 
-The registered UDF is then called from a Spark SQL query to process transaction data.
-
-## Output
-
-The program saves the final transaction result as a CSV file:
+Example transaction statuses include:
 
 ```text
-output/final-bank-account-result/
+Deposit Successful
+Withdrawal Successful
+Insufficient Balance
 ```
 
-The complete console output is also stored in:
+## Running the Project
 
-```text
-output/spark-bank-account-output.txt
-```
-
-## How to Run
-
-### Compile
+Compile the project:
 
 ```bash
 sbt compile
 ```
 
-### Run
+Run the project:
 
 ```bash
 sbt run
 ```
 
-### Save Console Output
+To save the console output:
 
 ```bash
 sbt run > output/spark-bank-account-output.txt 2>&1
 ```
 
-## GitHub
+Check the transaction summary:
 
-Repository:
+```bash
+grep -A7 "TRANSACTION SUMMARY" output/spark-bank-account-output.txt
+```
 
-`https://github.com/chinthavishnupriya/spark-bank-account-udf`
+## Output
 
-## Learning Outcomes
+The project saves the final result as a CSV file in:
+
+```text
+output/final-bank-account-result/
+```
+
+The complete console output is saved in:
+
+```text
+output/spark-bank-account-output.txt
+```
+
+## Learning Objectives
 
 This project demonstrates:
 
-* Creating Scala case classes
-* Creating Spark Datasets
-* Converting Datasets to DataFrames
-* Joining DataFrames
-* Creating and using UDFs
-* Registering UDFs with Spark SQL
-* Creating temporary SQL views
-* Performing transaction validation
-* Calculating final account balances
-* Preventing invalid withdrawals
-* Performing transaction statistics
-* Saving Spark results as CSV
-* Managing a Spark project with SBT
-* Version control using Git and GitHub
+1. Creating Scala case classes.
+2. Creating Spark Datasets.
+3. Converting Datasets into DataFrames.
+4. Joining account and transaction data.
+5. Creating and using Spark UDFs.
+6. Registering UDFs for Spark SQL.
+7. Processing multiple transactions for one account.
+8. Maintaining a sequential running balance.
+9. Validating deposits and withdrawals.
+10. Handling insufficient balance.
+11. Generating transaction summaries.
+12. Saving Spark results as CSV.
+13. Managing the project using Git and GitHub.
+
+## Project Status
+
+**Completed**
+
+The project demonstrates a complete Spark UDF workflow for bank accounts with **multiple sequential transactions per account**, transaction validation, insufficient-balance handling, Spark SQL integration, summary statistics, and CSV output.
