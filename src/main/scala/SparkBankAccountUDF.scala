@@ -17,121 +17,191 @@ object SparkBankAccountUDF {
     println("===== SPARK BANK ACCOUNT UDF STARTED =====")
 
     // --------------------------------------------------
-    // 1. CREATE DATASET
+    // 1. ACCOUNT DATA
     // --------------------------------------------------
 
     val accounts = Seq(
-      BankAccount(1001, "Chintan", 5000.0, 2000.0, 1000.0),
-      BankAccount(1002, "Rahul", 3000.0, 1000.0, 5000.0),
-      BankAccount(1003, "Priya", 10000.0, 5000.0, 3000.0),
-      BankAccount(1004, "Amit", 2000.0, 500.0, 2500.0),
-      BankAccount(1005, "Kiran", 4000.0, -500.0, 1000.0),
-      BankAccount(1006, "Suresh", 6000.0, 1000.0, -200.0)
+      BankAccount(1001, "Chintan", 5000.0),
+      BankAccount(1002, "Rahul", 3000.0),
+      BankAccount(1003, "Priya", 10000.0),
+      BankAccount(1004, "Amit", 2000.0)
     ).toDS()
 
-    println("\n===== DATASET =====")
-    accounts.show()
+    println("\n===== ACCOUNT DATA =====")
+    accounts.show(false)
 
     // --------------------------------------------------
-    // 2. CONVERT DATASET TO DATAFRAME
+    // 2. TRANSACTION DATA
+    // --------------------------------------------------
+
+    val transactions = Seq(
+      Transaction(1001, "Chintan", "deposit", 2000.0),
+      Transaction(1002, "Rahul", "withdraw", 5000.0),
+      Transaction(1003, "Priya", "deposit", 3000.0),
+      Transaction(1004, "Amit", "withdraw", 500.0)
+    ).toDS()
+
+    println("\n===== TRANSACTION DATA =====")
+    transactions.show(false)
+
+    // --------------------------------------------------
+    // 3. CONVERT TO DATAFRAMES
     // --------------------------------------------------
 
     val accountDF = accounts.toDF()
+    val transactionDF = transactions.toDF()
 
-    println("\n===== DATAFRAME =====")
-    accountDF.show()
+    println("\n===== ACCOUNT DATAFRAME =====")
+    accountDF.show(false)
 
-    // --------------------------------------------------
-    // 3. CALCULATE BALANCE AFTER DEPOSIT
-    // --------------------------------------------------
-
-    val depositDF = accountDF.withColumn(
-      "balanceAfterDeposit",
-      when(col("deposit") < 0, col("initialBalance"))
-        .otherwise(col("initialBalance") + col("deposit"))
-    )
-
-    println("\n===== BALANCE AFTER DEPOSIT =====")
-    depositDF.show()
+    println("\n===== TRANSACTION DATAFRAME =====")
+    transactionDF.show(false)
 
     // --------------------------------------------------
-    // 4. USER-DEFINED FUNCTION
+    // 4. JOIN ACCOUNT AND TRANSACTION DATA
     // --------------------------------------------------
 
-    val transactionStatus = udf(
-      (balance: Double, withdraw: Double, deposit: Double) => {
+    val joinedDF = accountDF
+      .join(
+        transactionDF,
+        Seq("accountId", "name"),
+        "inner"
+      )
 
-        if (deposit < 0) {
-          "Invalid Deposit"
-        }
-        else if (withdraw < 0) {
-          "Invalid Withdrawal"
-        }
-        else if (withdraw > balance) {
-          "Insufficient Balance"
-        }
-        else {
-          "Withdrawal Successful"
+    println("\n===== JOINED DATA =====")
+    joinedDF.show(false)
+
+    // --------------------------------------------------
+    // 5. USER DEFINED FUNCTION
+    // --------------------------------------------------
+
+    val processTransaction = udf(
+      (initialBalance: Double,
+       transactionType: String,
+       amount: Double) => {
+
+        if (amount < 0) {
+
+          (initialBalance, "Invalid Amount")
+
+        } else if (transactionType.toLowerCase == "deposit") {
+
+          (
+            initialBalance + amount,
+            "Deposit Successful"
+          )
+
+        } else if (transactionType.toLowerCase == "withdraw") {
+
+          if (amount > initialBalance) {
+
+            (
+              initialBalance,
+              "Insufficient Balance"
+            )
+
+          } else {
+
+            (
+              initialBalance - amount,
+              "Withdrawal Successful"
+            )
+          }
+
+        } else {
+
+          (
+            initialBalance,
+            "Invalid Transaction"
+          )
         }
       }
     )
 
     // --------------------------------------------------
-    // 5. APPLY UDF
+    // 6. APPLY UDF
     // --------------------------------------------------
 
-    val resultDF = depositDF
+    val resultDF = joinedDF
       .withColumn(
-        "status",
-        transactionStatus(
-          col("balanceAfterDeposit"),
-          col("withdraw"),
-          col("deposit")
+        "transactionResult",
+        processTransaction(
+          col("initialBalance"),
+          col("transactionType"),
+          col("amount")
         )
       )
       .withColumn(
         "finalBalance",
-        when(
-          col("status") === "Withdrawal Successful",
-          col("balanceAfterDeposit") - col("withdraw")
-        )
-        .otherwise(col("balanceAfterDeposit"))
+        col("transactionResult._1")
       )
+      .withColumn(
+        "status",
+        col("transactionResult._2")
+      )
+      .drop("transactionResult")
 
     println("\n===== UDF RESULT =====")
     resultDF.show(false)
 
     // --------------------------------------------------
-    // 6. REGISTER UDF FOR SPARK SQL
+    // 7. REGISTER UDF FOR SPARK SQL
     // --------------------------------------------------
 
     spark.udf.register(
-      "checkTransaction",
-      (balance: Double, withdraw: Double, deposit: Double) => {
+      "processBankTransaction",
+      (
+        initialBalance: Double,
+        transactionType: String,
+        amount: Double
+      ) => {
 
-        if (deposit < 0) {
-          "Invalid Deposit"
-        }
-        else if (withdraw < 0) {
-          "Invalid Withdrawal"
-        }
-        else if (withdraw > balance) {
-          "Insufficient Balance"
-        }
-        else {
-          "Withdrawal Successful"
+        if (amount < 0) {
+
+          (initialBalance, "Invalid Amount")
+
+        } else if (transactionType.toLowerCase == "deposit") {
+
+          (
+            initialBalance + amount,
+            "Deposit Successful"
+          )
+
+        } else if (transactionType.toLowerCase == "withdraw") {
+
+          if (amount > initialBalance) {
+
+            (
+              initialBalance,
+              "Insufficient Balance"
+            )
+
+          } else {
+
+            (
+              initialBalance - amount,
+              "Withdrawal Successful"
+            )
+          }
+
+        } else {
+
+          (
+            initialBalance,
+            "Invalid Transaction"
+          )
         }
       }
     )
 
     // --------------------------------------------------
-    // 7. CREATE TEMPORARY VIEW
+    // 8. CREATE TEMPORARY VIEW
     // --------------------------------------------------
 
-    resultDF.createOrReplaceTempView("bank_accounts")
+    joinedDF.createOrReplaceTempView("bank_transactions")
 
     // --------------------------------------------------
-    // 8. SPARK SQL + UDF
+    // 9. SPARK SQL + UDF
     // --------------------------------------------------
 
     val sqlResult = spark.sql(
@@ -140,16 +210,14 @@ object SparkBankAccountUDF {
           accountId,
           name,
           initialBalance,
-          deposit,
-          withdraw,
-          balanceAfterDeposit,
-          finalBalance,
-          checkTransaction(
-            balanceAfterDeposit,
-            withdraw,
-            deposit
-          ) AS transactionStatus
-        FROM bank_accounts
+          transactionType,
+          amount,
+          processBankTransaction(
+            initialBalance,
+            transactionType,
+            amount
+          ) AS transactionResult
+        FROM bank_transactions
       """
     )
 
@@ -157,15 +225,15 @@ object SparkBankAccountUDF {
     sqlResult.show(false)
 
     // --------------------------------------------------
-    // 9. FINAL RESULT
+    // 10. FINAL RESULT
     // --------------------------------------------------
 
     val finalResult = resultDF.select(
       col("accountId"),
       col("name"),
       col("initialBalance"),
-      col("deposit"),
-      col("withdraw"),
+      col("transactionType"),
+      col("amount"),
       col("finalBalance"),
       col("status")
     )
@@ -174,7 +242,7 @@ object SparkBankAccountUDF {
     finalResult.show(false)
 
     // --------------------------------------------------
-    // 10. SAVE OUTPUT
+    // 11. SAVE OUTPUT
     // --------------------------------------------------
 
     finalResult
