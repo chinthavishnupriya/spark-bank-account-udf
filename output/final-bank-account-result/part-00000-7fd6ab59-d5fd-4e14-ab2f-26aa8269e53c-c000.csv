@@ -1,0 +1,7 @@
+accountId,name,initialBalance,deposit,withdraw,finalBalance,status
+1001,Chintan,5000.0,2000.0,1000.0,6000.0,Withdrawal Successful
+1002,Rahul,3000.0,1000.0,5000.0,4000.0,Insufficient Balance
+1003,Priya,10000.0,5000.0,3000.0,12000.0,Withdrawal Successful
+1004,Amit,2000.0,500.0,2500.0,0.0,Withdrawal Successful
+1005,Kiran,4000.0,-500.0,1000.0,4000.0,Invalid Deposit
+1006,Suresh,6000.0,1000.0,-200.0,7000.0,Invalid Withdrawal
