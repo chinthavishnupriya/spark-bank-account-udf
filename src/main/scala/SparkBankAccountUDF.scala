@@ -32,30 +32,22 @@ object SparkBankAccountUDF {
 
     // --------------------------------------------------
     // 2. TRANSACTION DATA
-    // Multiple transactions for the same account
     // --------------------------------------------------
 
     val transactions = Seq(
       Transaction(1001, "Chintan", "deposit", 2000.0, 1),
-      Transaction(1001, "Chintan", "withdraw", 1000.0, 2),
-      Transaction(1001, "Chintan", "deposit", 500.0, 3),
-      Transaction(1001, "Chintan", "withdraw", 8000.0, 4),
-
       Transaction(1002, "Rahul", "withdraw", 5000.0, 1),
-      Transaction(1002, "Rahul", "deposit", 1000.0, 2),
-
       Transaction(1003, "Priya", "deposit", 3000.0, 1),
-      Transaction(1003, "Priya", "withdraw", 2000.0, 2),
-
-      Transaction(1004, "Amit", "withdraw", 500.0, 1),
-      Transaction(1004, "Amit", "deposit", 1000.0, 2)
+      Transaction(1004, "Amit", "withdraw", 500.0, 1)
     ).toDS()
 
     println("\n===== TRANSACTION DATA =====")
-    transactions.orderBy("accountId", "transactionNo").show(false)
+    transactions
+      .orderBy("accountId", "transactionNo")
+      .show(false)
 
     // --------------------------------------------------
-    // 3. CONVERT TO DATAFRAMES
+    // 3. DATAFRAMES
     // --------------------------------------------------
 
     val accountDF = accounts.toDF()
@@ -135,91 +127,27 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 6. PROCESS MULTIPLE TRANSACTIONS
+    // 6. APPLY UDF
     // --------------------------------------------------
 
-    val transactionRows = joinedDF
-      .orderBy("accountId", "transactionNo")
-      .collect()
-
-    var currentAccountId = -1
-    var currentBalance = 0.0
-
-    val processedRows = transactionRows.map { row =>
-
-      val accountId = row.getAs[Int]("accountId")
-      val name = row.getAs[String]("name")
-      val initialBalance = row.getAs[Double]("initialBalance")
-      val transactionType = row.getAs[String]("transactionType")
-      val amount = row.getAs[Double]("amount")
-      val transactionNo = row.getAs[Int]("transactionNo")
-
-      if (accountId != currentAccountId) {
-        currentAccountId = accountId
-        currentBalance = initialBalance
-      }
-
-      val result =
-        if (amount < 0) {
-
-          (currentBalance, "Invalid Amount")
-
-        } else if (transactionType.toLowerCase == "deposit") {
-
-          (
-            currentBalance + amount,
-            "Deposit Successful"
-          )
-
-        } else if (transactionType.toLowerCase == "withdraw") {
-
-          if (amount > currentBalance) {
-
-            (
-              currentBalance,
-              "Insufficient Balance"
-            )
-
-          } else {
-
-            (
-              currentBalance - amount,
-              "Withdrawal Successful"
-            )
-          }
-
-        } else {
-
-          (
-            currentBalance,
-            "Invalid Transaction"
-          )
-        }
-
-      currentBalance = result._1
-
-      (
-        accountId,
-        name,
-        initialBalance,
-        transactionNo,
-        transactionType,
-        amount,
-        result._1,
-        result._2
+    val resultDF = joinedDF
+      .withColumn(
+        "transactionResult",
+        processTransaction(
+          col("initialBalance"),
+          col("transactionType"),
+          col("amount")
+        )
       )
-    }
-
-    val resultDF = processedRows.toSeq.toDF(
-      "accountId",
-      "name",
-      "initialBalance",
-      "transactionNo",
-      "transactionType",
-      "amount",
-      "finalBalance",
-      "status"
-    )
+      .withColumn(
+        "finalBalance",
+        col("transactionResult._1")
+      )
+      .withColumn(
+        "status",
+        col("transactionResult._2")
+      )
+      .drop("transactionResult")
 
     println("\n===== UDF RESULT =====")
     resultDF
@@ -277,7 +205,7 @@ object SparkBankAccountUDF {
     )
 
     // --------------------------------------------------
-    // 8. CREATE TEMPORARY VIEW
+    // 8. TEMPORARY VIEW
     // --------------------------------------------------
 
     joinedDF.createOrReplaceTempView("bank_transactions")
@@ -330,7 +258,53 @@ object SparkBankAccountUDF {
       .show(false)
 
     // --------------------------------------------------
-    // 11. SAVE FINAL OUTPUT
+    // 11. TRANSACTION SUMMARY
+    // --------------------------------------------------
+
+    val totalTransactions = finalResult.count()
+
+    val successfulTransactions = finalResult
+      .filter(
+        col("status") === "Deposit Successful" ||
+        col("status") === "Withdrawal Successful"
+      )
+      .count()
+
+    val failedTransactions = finalResult
+      .filter(
+        col("status") =!= "Deposit Successful" &&
+        col("status") =!= "Withdrawal Successful"
+      )
+      .count()
+
+    val insufficientBalance = finalResult
+      .filter(
+        col("status") === "Insufficient Balance"
+      )
+      .count()
+
+    val successfulDeposits = finalResult
+      .filter(
+        col("status") === "Deposit Successful"
+      )
+      .count()
+
+    val successfulWithdrawals = finalResult
+      .filter(
+        col("status") === "Withdrawal Successful"
+      )
+      .count()
+
+    println("\n===== TRANSACTION SUMMARY =====")
+    println(s"Total Transactions      : $totalTransactions")
+    println(s"Successful Transactions : $successfulTransactions")
+    println(s"Failed Transactions     : $failedTransactions")
+    println(s"Insufficient Balance    : $insufficientBalance")
+    println(s"Successful Deposits     : $successfulDeposits")
+    println(s"Successful Withdrawals  : $successfulWithdrawals")
+
+    // --------------------------------------------------
+    // 12. SAVE FINAL OUTPUT
     // --------------------------------------------------
 
     finalResult
