@@ -1,8 +1,8 @@
 # Spark Bank Account UDF
 
-A Scala and Apache Spark project that demonstrates how **User Defined Functions (UDFs)** can be used to process bank account transactions.
+A Scala and Apache Spark project demonstrating **User Defined Functions (UDFs), Spark SQL, Window Functions, Accumulators, Broadcast Variables, and sequential transaction processing** for bank accounts.
 
-The project supports **multiple transactions for the same account**. Each transaction is processed sequentially, and the balance from one transaction becomes the balance for the next transaction.
+The project supports **multiple transactions for the same account**. Each transaction is processed in sequence, and the balance from one transaction becomes the balance for the next transaction.
 
 ## Technologies Used
 
@@ -38,9 +38,9 @@ spark-bank-account-udf/
         └── part-*.csv
 ```
 
-## Account Data
+## 1. Account Data
 
-The account data contains:
+The `BankAccount` case class contains:
 
 * Account ID
 * Account holder name
@@ -56,11 +56,9 @@ Account ID    Name       Initial Balance
 1004          Amit       2000.0
 ```
 
-## Transaction Data
+## 2. Transaction Data
 
-A separate transaction dataset is used.
-
-Each transaction contains:
+The `Transaction` case class contains:
 
 * Account ID
 * Name
@@ -70,7 +68,7 @@ Each transaction contains:
 
 One account can perform **N transactions**.
 
-For example, Chintan has five transactions:
+For example, Chintan performs five transactions:
 
 ```text
 Transaction 1 → Deposit  2000
@@ -80,9 +78,9 @@ Transaction 4 → Withdraw  800
 Transaction 5 → Withdraw 10000
 ```
 
-## Sequential Balance Processing
+## 3. Sequential Transaction Processing
 
-Transactions are processed in transaction-number order.
+Transactions are processed according to their transaction number.
 
 For Chintan:
 
@@ -110,15 +108,30 @@ Result = Insufficient Balance
 Final Balance = 5700
 ```
 
-The balance is therefore carried forward from one transaction to the next.
+The current balance is carried forward to the next transaction.
 
-## UDF Logic
+The balance is never allowed to become negative.
 
-The project uses a User Defined Function to process transactions.
+## 4. User Defined Function
+
+A Spark UDF named `processTransaction` is used to process transactions.
+
+The UDF receives:
+
+```text
+currentBalance
+transactionType
+amount
+```
+
+It returns:
+
+```text
+new balance
+transaction status
+```
 
 ### Deposit
-
-If the transaction is a deposit:
 
 ```text
 new balance = current balance + amount
@@ -132,7 +145,7 @@ Deposit Successful
 
 ### Withdrawal
 
-If the transaction is a withdrawal and sufficient balance exists:
+If sufficient balance exists:
 
 ```text
 new balance = current balance - amount
@@ -158,8 +171,6 @@ Status:
 Insufficient Balance
 ```
 
-The balance is never allowed to become negative.
-
 ### Invalid Amount
 
 Negative transaction amounts are rejected.
@@ -172,7 +183,7 @@ Invalid Amount
 
 ### Invalid Transaction
 
-Transactions other than `deposit` or `withdraw` are rejected.
+Transactions other than `deposit` and `withdraw` are rejected.
 
 Status:
 
@@ -180,15 +191,92 @@ Status:
 Invalid Transaction
 ```
 
-## Spark SQL
+## 5. Broadcast Variable
 
-The project also demonstrates Spark SQL integration.
+The project uses a **Spark Broadcast Variable** for account master data.
 
-A temporary view is created from the joined account and transaction data.
+The account information is converted into a map:
 
-Spark SQL and a registered UDF are used to demonstrate transaction-status processing and running balance information.
+```text
+accountId → BankAccount
+```
 
-## Transaction Summary
+This map is broadcast to Spark workers.
+
+The project verifies:
+
+```text
+Broadcasted Accounts: 4
+```
+
+### Why Broadcast?
+
+Broadcast variables are useful when a relatively small piece of read-only data needs to be available to many worker tasks.
+
+Instead of repeatedly transferring the same account data, Spark can distribute the data as a broadcast variable.
+
+In this project, the broadcast data is used to retrieve the account's initial balance during transaction processing.
+
+## 6. Accumulators
+
+The project uses Spark **Long Accumulators** to collect transaction statistics.
+
+The following accumulators are used:
+
+```text
+Total Transactions
+Successful Transactions
+Failed Transactions
+Insufficient Balance
+Successful Deposits
+Successful Withdrawals
+```
+
+### Why Accumulators?
+
+An accumulator allows worker tasks to add values to a shared counter that can be read by the driver program.
+
+In this project, accumulators are used for **statistics and counting**, not for maintaining account balances.
+
+The actual account balance remains business data and is processed separately.
+
+## 7. Spark SQL
+
+The joined account and transaction data is registered as a temporary view:
+
+```text
+bank_transactions
+```
+
+Spark SQL is then used to calculate the transaction's running balance information.
+
+A registered SQL UDF named:
+
+```text
+transactionStatus
+```
+
+is used to determine the transaction status.
+
+## 8. Window Function
+
+A Spark SQL window function is used to calculate the balance before each transaction.
+
+The window is partitioned by:
+
+```text
+accountId
+```
+
+and ordered by:
+
+```text
+transactionNo
+```
+
+This allows the project to demonstrate running-balance calculations for multiple transactions belonging to the same account.
+
+## 9. Transaction Summary
 
 The current test dataset contains **15 transactions**.
 
@@ -212,9 +300,9 @@ Amit    → 3 transactions
 Total    → 15 transactions
 ```
 
-## Final Result
+## 10. Final Output
 
-The final output contains:
+The final result contains:
 
 ```text
 accountId
@@ -227,74 +315,123 @@ finalBalance
 status
 ```
 
-Example transaction statuses include:
+Possible statuses include:
 
 ```text
 Deposit Successful
 Withdrawal Successful
 Insufficient Balance
+Invalid Amount
+Invalid Transaction
 ```
 
-## Running the Project
+The final result is saved as CSV.
 
-Compile the project:
+## 11. Output Files
 
-```bash
-sbt compile
-```
-
-Run the project:
-
-```bash
-sbt run
-```
-
-To save the console output:
-
-```bash
-sbt run > output/spark-bank-account-output.txt 2>&1
-```
-
-Check the transaction summary:
-
-```bash
-grep -A7 "TRANSACTION SUMMARY" output/spark-bank-account-output.txt
-```
-
-## Output
-
-The project saves the final result as a CSV file in:
-
-```text
-output/final-bank-account-result/
-```
-
-The complete console output is saved in:
+Console output:
 
 ```text
 output/spark-bank-account-output.txt
 ```
 
-## Learning Objectives
+Final CSV output:
+
+```text
+output/final-bank-account-result/
+```
+
+## 12. Running the Project
+
+Compile:
+
+```bash
+sbt compile
+```
+
+Run:
+
+```bash
+sbt run
+```
+
+Save console output:
+
+```bash
+sbt run > output/spark-bank-account-output.txt 2>&1
+```
+
+Check the accumulator summary:
+
+```bash
+grep -A7 "ACCUMULATOR SUMMARY" output/spark-bank-account-output.txt
+```
+
+Check the broadcast variable:
+
+```bash
+grep "Broadcasted Accounts" output/spark-bank-account-output.txt
+```
+
+## 13. Git Workflow
+
+Initialize the repository:
+
+```bash
+git init
+```
+
+Add files:
+
+```bash
+git add -A
+```
+
+Commit changes:
+
+```bash
+git commit -m "Commit message"
+```
+
+Push to GitHub:
+
+```bash
+git push
+```
+
+Check repository status:
+
+```bash
+git status
+```
+
+## 14. Learning Objectives
 
 This project demonstrates:
 
-1. Creating Scala case classes.
-2. Creating Spark Datasets.
-3. Converting Datasets into DataFrames.
-4. Joining account and transaction data.
-5. Creating and using Spark UDFs.
-6. Registering UDFs for Spark SQL.
-7. Processing multiple transactions for one account.
-8. Maintaining a sequential running balance.
-9. Validating deposits and withdrawals.
-10. Handling insufficient balance.
-11. Generating transaction summaries.
-12. Saving Spark results as CSV.
-13. Managing the project using Git and GitHub.
+1. Scala case classes
+2. Spark Datasets
+3. Spark DataFrames
+4. DataFrame joins
+5. User Defined Functions
+6. Spark SQL
+7. SQL UDF registration
+8. Window functions
+9. Multiple transactions per account
+10. Sequential running balance
+11. Deposit processing
+12. Withdrawal processing
+13. Insufficient-balance validation
+14. Transaction validation
+15. **Broadcast Variables**
+16. **Accumulators**
+17. Transaction statistics
+18. CSV output
+19. Git version control
+20. GitHub project management
 
-## Project Status
+## 15. Project Status
 
 **Completed**
 
-The project demonstrates a complete Spark UDF workflow for bank accounts with **multiple sequential transactions per account**, transaction validation, insufficient-balance handling, Spark SQL integration, summary statistics, and CSV output.
+The project demonstrates a complete Spark transaction-processing workflow using **Scala, Spark Dataset, DataFrame, UDF, Spark SQL, Window Functions, Broadcast Variables, Accumulators, sequential N-transaction processing, validation, transaction statistics, and CSV output.**
